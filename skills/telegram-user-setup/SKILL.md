@@ -25,7 +25,7 @@ If the user only wants notifications, or to post to a channel or group, **offer 
 2. A **one-time login**: phone + login code (and 2FA cloud password if enabled), **or** QR, **or** an existing GramJS / teleproto / Telethon **session string**.
 3. Nothing after that. The session is written to `~/.grokbot-telegram/user.session` at mode `0600` and reused.
 
-**Never ask them to paste secrets into git.** If a session string has to be shown once, tell them to store it immediately and not to repeat it in later chats.
+**Never ask them to paste secrets into git.** Login tools write the session file and do not return the session string. Do not paste it into chat.
 
 ## 1. Create an app at my.telegram.org
 
@@ -57,14 +57,15 @@ Call `telegram-user` `auth_status` first. If `authorized` is true, skip login.
 3. Telegram sends a login code to the Telegram app (or SMS).
 4. Ask the user for the code (and 2FA password if `auth_status` / the error says it is required).
 5. Call `complete_login` with `code` and optional `password`.
-6. Tell them to save the returned `session` in **Plugins → Configure → TELEGRAM_SESSION** (or rely on the written session file). Treat it as a password.
+6. The tool writes `user.session` and does **not** return the session string. Do not ask the user to paste it into chat. If a host still requires `TELEGRAM_SESSION`, they copy it from the file locally. Treat the file as a password.
+7. To abandon an in-flight phone or QR attempt, call `cancel_login`. That does not log the account out and does not overwrite an existing session file.
 
 ### B. QR (MCP)
 
 1. Call `start_qr_login`.
 2. Show the `login_url` (`tg://login?token=…`). On a phone: Telegram → **Settings → Devices → Link Desktop Device** and scan / open the link.
 3. Call `complete_qr_login` (pass `password` if 2FA is enabled). Wait for them to scan before this call, or retry if it says still waiting.
-4. Save the session as in A.
+4. The session is written to the session file and is not returned. Same rule as phone login.
 
 ### C. Existing session string
 
@@ -103,10 +104,20 @@ Restarting Cursor reuses the session. Do not check session files into git (they 
 | Missing api_id / api_hash | Plugins → Configure unset; placeholders not substituted |
 | `PHONE_NUMBER_INVALID` | Use `+` and country code |
 | `PHONE_CODE_INVALID` / expired | Request a new code with `start_login` again |
-| `SESSION_PASSWORD_NEEDED` | Account has 2FA; pass `password` to `complete_login` / `complete_qr_login` |
+| `code: timeout` | `connect` did not finish in time. The session file was not changed and the account was not logged out. This is not the same as "not logged in" |
+| `code: auth_invalid` | The session was rejected (`AUTH_KEY_UNREGISTERED` and the same family). The file is left in place |
+| `code: cancelled` | `cancel_login`, or the attempt was replaced. The session file was not changed |
+| `code: already_authorized` | A saved session is already signed in. No new QR is issued and nothing is logged out |
+| `code: session_password_needed` | Account has 2FA. Call the same complete tool again with `password` |
+| `code: auth_key_duplicated` | The same session is already in use. Stop the extra client. The file was not rewritten |
+| `SESSION_PASSWORD_NEEDED` | Same as `session_password_needed`. The password is a tool argument because this process has no host vault or secret-reference field. It is not echoed |
 | `AUTH_KEY_DUPLICATED` | Same session used by two processes; stop the extra client |
 | Unauthorized after restart | Session not saved; set `TELEGRAM_SESSION` or keep the session file |
 | Flood / slow | Back off. Do not loop login or bulk-send |
+
+## 2FA limitation
+
+This connector cannot use a host vault, security-reference, or user-form API. None is provided to the process. When Telegram returns `SESSION_PASSWORD_NEEDED`, call `complete_login` or `complete_qr_login` again with `password`. Do not repeat the password, the login code, `api_hash`, or the session string in chat. Do not describe that argument as a secure store.
 
 ## Warnings
 

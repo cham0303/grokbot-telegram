@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -66,6 +66,7 @@ async function connectClient(clientImpl: TelegramUserClient) {
 
 const expectedTools = [
   "auth_status",
+  "cancel_login",
   "complete_login",
   "complete_qr_login",
   "get_me",
@@ -216,12 +217,17 @@ describe("telegram user MCP server", () => {
       assert.equal(done.isError ?? false, false, doneText);
       const parsed = JSON.parse(doneText) as {
         ok: boolean;
-        session: string;
+        session_saved?: boolean;
+        session?: string;
         me: UserInfo;
       };
       assert.equal(parsed.ok, true);
       assert.equal(parsed.me.username, "ada");
-      assert.ok(parsed.session.length > 20);
+      assert.equal(parsed.session_saved, true);
+      assert.equal(parsed.session, undefined);
+      const saved = readFileSync(join(dir, "user.session"), "utf8");
+      assert.equal(saved, "MOCKSESSIONSTRING".repeat(6));
+      assert.equal(doneText.includes(saved), false);
       assert.equal(doneText.includes(process.env.TELEGRAM_API_HASH ?? "nope"), false);
     } finally {
       await client.close();

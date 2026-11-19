@@ -1,6 +1,7 @@
 const BOT_TOKEN_LIKE = /\b\d{8,12}:[A-Za-z0-9_-]{20,}\b/g;
 const API_HASH_LIKE = /\b[a-f0-9]{32}\b/gi;
 const SESSION_LIKE = /\b[A-Za-z0-9+/_-]{80,}\b/g;
+const LOGIN_URL_LIKE = /tg:\/\/login\?token=[^\s"'\\]+/gi;
 
 export function redactSecrets(
   text: string,
@@ -15,6 +16,7 @@ export function redactSecrets(
   out = out.replace(BOT_TOKEN_LIKE, "[redacted-bot-token]");
   out = out.replace(API_HASH_LIKE, "[redacted-api-hash]");
   out = out.replace(SESSION_LIKE, "[redacted-session]");
+  out = out.replace(LOGIN_URL_LIKE, "[redacted-login-url]");
   return out;
 }
 

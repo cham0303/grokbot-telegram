@@ -6,9 +6,8 @@
 // So the in-flight state goes to disk. The file holds a pre-authorization
 // session: it cannot read or send anything, but it is the auth key the code is
 // bound to, so it is written 0600 and deleted the moment login succeeds.
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { defaultSessionPath } from "./credentials.js";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { atomicWriteFile, defaultSessionPath } from "./credentials.js";
 
 // Comfortably longer than a Telegram login code lives, short enough that an
 // abandoned attempt does not leave an auth key lying around.
@@ -65,9 +64,47 @@ export function writePendingLogin(
   home?: string,
 ): string {
   const path = pendingLoginPath(env, home);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(pending), { encoding: "utf8", mode: 0o600 });
+  atomicWriteFile(path, JSON.stringify(pending), 0o600);
   return path;
+}
+
+export function loginCancelledPath(
+  env: NodeJS.ProcessEnv = process.env,
+  home?: string,
+): string {
+  const session =
+    home === undefined ? defaultSessionPath(env) : defaultSessionPath(env, home);
+  return `${session}.cancelled.json`;
+}
+
+// A cancel marker is not a session. It only tells a later process that the
+// in-flight login was cancelled, including when that process is new.
+export function markLoginCancelled(
+  env: NodeJS.ProcessEnv = process.env,
+  home?: string,
+): void {
+  atomicWriteFile(
+    loginCancelledPath(env, home),
+    JSON.stringify({ cancelled: true }),
+    0o600,
+  );
+}
+
+export function takeLoginCancelled(
+  env: NodeJS.ProcessEnv = process.env,
+  home?: string,
+): boolean {
+  const path = loginCancelledPath(env, home);
+  if (!existsSync(path)) return false;
+  rmSync(path, { force: true });
+  return true;
+}
+
+export function clearLoginCancelled(
+  env: NodeJS.ProcessEnv = process.env,
+  home?: string,
+): void {
+  rmSync(loginCancelledPath(env, home), { force: true });
 }
 
 // Returns null when there is nothing pending, when the file is too old, or

@@ -45,6 +45,23 @@ describe("createGramJsUserClient session source", () => {
     }
   });
 
+  it("does not write the teleproto startup line to stdout", () => {
+    const dir = withCredentials();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      createGramJsUserClient();
+      assert.equal(lines.some((line) => line.includes("Running teleproto")), false);
+      assert.equal(lines.join("\n").includes("deadbeefdeadbeefdeadbeefdeadbeef"), false);
+    } finally {
+      console.log = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prefers the resumed session over the session file", () => {
     const dir = withCredentials();
     try {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -79,6 +79,43 @@ describe("session file", () => {
     assert.equal(readSessionString(), "file-session-string");
     assert.equal(readFileSync(path, "utf8"), "file-session-string");
     assert.equal(sessionSource(), "file");
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("replaces the session atomically and leaves the old file if rename does not happen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-session-"));
+    const path = join(dir, "user.session");
+    process.env.TELEGRAM_SESSION_PATH = path;
+    delete process.env.TELEGRAM_SESSION;
+    writeSessionString("GOOD-SESSION");
+    assert.throws(
+      () => writeSessionString("NEW-SESSION", { beforeRename: () => { throw new Error("crash"); } }),
+      /crash/,
+    );
+    assert.equal(readFileSync(path, "utf8"), "GOOD-SESSION");
+    assert.equal(
+      readdirSync(dir).some((name) => name.includes(".tmp-")),
+      false,
+    );
+    writeSessionString("NEW-SESSION");
+    assert.equal(readFileSync(path, "utf8"), "NEW-SESSION");
+    assert.equal(
+      readdirSync(dir).some((name) => name.includes(".tmp-") || name.endsWith(".lock")),
+      false,
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses to replace a session with an empty string", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-session-"));
+    const path = join(dir, "user.session");
+    process.env.TELEGRAM_SESSION_PATH = path;
+    delete process.env.TELEGRAM_SESSION;
+    writeSessionString("GOOD-SESSION");
+    assert.throws(() => writeSessionString("  "), /empty session/);
+    assert.equal(readFileSync(path, "utf8"), "GOOD-SESSION");
     rmSync(dir, { recursive: true, force: true });
   });
 });

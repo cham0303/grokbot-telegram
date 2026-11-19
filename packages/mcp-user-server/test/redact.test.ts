@@ -20,4 +20,11 @@ describe("user redactSecrets", () => {
     const out = safeErrorMessage(err, [HASH]);
     assert.equal(out.includes(HASH), false);
   });
+
+  it("redacts a QR login URL even when the token is not a long session", () => {
+    const url = "tg://login?token=<TOKEN_CANARY>";
+    const out = redactSecrets(`fail ${url} tail`, [url, "<TOKEN_CANARY>"]);
+    assert.equal(out.includes("<TOKEN_CANARY>"), false);
+    assert.equal(out.includes("tg://login"), false);
+  });
 });
