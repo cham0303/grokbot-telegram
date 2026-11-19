@@ -123,10 +123,11 @@ The repo never contains real tokens, api hashes, or sessions. `mcp.json` only ha
 
 | Tool | Purpose |
 | --- | --- |
-| `save_api_credentials` | Store api_id / api_hash at 0600 so no config file is needed |
-| `auth_status` | Credentials + whether the session is authorized |
-| `start_login` / `complete_login` | Phone + login code (+ optional 2FA password) |
-| `start_qr_login` / `complete_qr_login` | QR / Link Desktop Device (+ optional 2FA) |
+| `save_api_credentials` | Store api_id / api_hash at 0600. `api_hash` is not echoed |
+| `auth_status` | Credentials + whether the session is authorized. No session string |
+| `start_login` / `complete_login` | Phone + login code (+ optional 2FA password). The session is written to the file and is not returned |
+| `cancel_login` | Cancel an in-flight phone or QR login. Does not log out or overwrite a saved session |
+| `start_qr_login` / `complete_qr_login` | Same-process QR / Link Desktop Device (+ optional 2FA). A new process cannot redeem the previous code |
 | `get_me` | Logged-in **user** (not a bot) |
 | `list_dialogs` | Real dialog / inbox list, `isForum` marks groups with topics |
 | `list_forum_topics` | Topics of a forum group, with the ids to send into |
@@ -153,7 +154,7 @@ Both servers ship as one npm package, [`grokbot-telegram`](https://www.npmjs.com
 ```bash
 npx grokbot-telegram bot     # Bot API server over stdio
 npx grokbot-telegram user    # user-account (MTProto) server over stdio
-npx grokbot-telegram login   # interactive login, prints a TELEGRAM_SESSION
+npx grokbot-telegram login   # interactive login, writes the session file, does not print it
 ```
 
 With no command the mode is read from the environment: `TELEGRAM_BOT_TOKEN` selects `bot`, `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` select `user`. If both are set it refuses to guess and asks for an explicit mode.
@@ -209,14 +210,18 @@ The plugin declares variables in `.cursor-plugin/plugin.json` and substitutes `$
 | `TELEGRAM_BOT_TOKEN` | Bot | [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_API_ID` | User | [my.telegram.org/apps](https://my.telegram.org/apps) — or let the agent store it, see below |
 | `TELEGRAM_API_HASH` | User | [my.telegram.org/apps](https://my.telegram.org/apps) — or let the agent store it, see below |
-| `TELEGRAM_SESSION` | User | Returned after first login (optional if the session file exists) |
+| `TELEGRAM_SESSION` | User | Optional if the session file exists. Login no longer returns the string; copy it from the file locally if a host requires the variable |
 | `TELEGRAM_DISCLAIMER` | Both | Optional. Footer wording, or `off` to disable (see below) |
 
 Optional env (not a marketplace variable): `TELEGRAM_SESSION_PATH` overrides the default session file `~/.grokbot-telegram/user.session`.
 
 Login is two calls — `start_login` sends the code, `complete_login` redeems it — and some MCP hosts start a fresh process per call. So the in-flight state is written next to the session file as `user.session.pending.json` (mode 0600) and picked back up by the next process. It holds a pre-authorization session: it cannot read or send anything, but it is the auth key the code is bound to, so it is deleted the moment login succeeds and discarded after 15 minutes.
 
-**QR login does not survive a restart, and cannot.** Telegram announces the scan on the connection that exported the code, and the authorization only exists once that same connection redeems it. The process that called `start_qr_login` has to stay alive until the scan lands. On a host that starts a process per tool call, use phone login. `complete_qr_login` still adopts an already-authorized session if there is one, and otherwise hands back a fresh `login_url`, because exporting again yields a *different* code and re-showing the old one can never work.
+**QR login does not survive a restart, and cannot.** Telegram announces the scan on the connection that exported the code, and the authorization only exists once that same connection redeems it. `start_qr_login` does not write a pending file. The process that called it has to stay alive until the scan lands. On a host that starts a process per tool call, use phone login. `complete_qr_login` still adopts an already-authorized session if there is one, and otherwise hands back a fresh `login_url`, because exporting again yields a *different* code and re-showing the old one can never work. `cancel_login` drops the in-flight attempt, including for a later process, and does not delete or overwrite `user.session`.
+
+A successful save replaces the session file by writing a temporary file in the same directory and renaming it (mode `0600`, directory `0700`). A failed or cancelled attempt does not rename over the previous file. `connect` is bounded (20 seconds) and returns `code: "timeout"`, which is distinct from `auth_invalid`, `cancelled`, `not_authorized`, and `already_authorized`. That bound is not an explanation of any particular host timeout.
+
+**Limitations.** `auth_status` and `get_me` still include Telegram's profile object (`id`, names, and phone when Telegram sends them). This connector has no host API to mask that profile. Two-step verification still takes `password` as a tool argument: there is no vault, security-reference, or user-form channel in this process. The password, login code, `api_hash`, and session string are redacted from tool results, logs, and errors. The QR `login_url` is returned only as the owner-facing scan payload (image plus fallback URL), not in errors. None of this makes a live account production-ready.
 
 The project was called `cursor-telegram-plugin` before it became `grokbot-telegram`. A session left in the old `~/.cursor-telegram-plugin/user.session` is still read, so an existing login keeps working; new sessions are written to the new path.
 

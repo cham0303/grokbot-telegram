@@ -1,9 +1,13 @@
-import { TelegramClient, Api } from "teleproto";
+import { TelegramClient, Api, Logger } from "teleproto";
+import { LogLevel } from "teleproto/extensions/Logger.js";
 import { StringSession } from "teleproto/sessions/index.js";
 import {
   getUserApiCredentials,
   readSessionString,
 } from "./credentials.js";
+import { safeErrorMessage } from "./redact.js";
+import { singleFlight } from "./single-flight.js";
+import { CONNECT_TIMEOUT_MS, ToolFailure } from "./tool-error.js";
 import type { DialogSummary, ForumTopicSummary } from "./dialogs.js";
 import {
   isPasswordNeeded,
@@ -128,6 +132,44 @@ export { qrUrl };
 // an earlier process. Without it a restarted process builds a fresh auth key
 // and Telegram answers PHONE_CODE_EXPIRED, because the pending code is bound
 // to the key that requested it.
+// teleproto's default logger writes INFO lines with console.log, which is
+// stdout. A stdio MCP server cannot share stdout with those lines. Errors go
+// to stderr and are redacted; info and debug are dropped.
+function quietLogger(): Logger {
+  const logger = new Logger(LogLevel.ERROR);
+  logger.handler = (record) => {
+    const text = safeErrorMessage(record.error ?? record.message);
+    process.stderr.write(`teleproto ${record.level}: ${text}\n`);
+  };
+  return logger;
+}
+
+async function connectWithTimeout(
+  connect: () => Promise<void>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = connect();
+  pending.catch(() => {});
+  try {
+    await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ToolFailure(
+              "timeout",
+              `Telegram connect timed out after ${timeoutMs}ms. The session file was not changed and the account was not logged out.`,
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export function createGramJsUserClient(
   resumeSession?: string,
 ): TelegramUserClient {
@@ -135,6 +177,7 @@ export function createGramJsUserClient(
   const session = new StringSession(resumeSession ?? readSessionString());
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
+    baseLogger: quietLogger(),
     // This is what the account owner sees in Telegram → Settings → Devices,
     // so it names the package they would search for to find or revoke it.
     deviceModel: "grokbot-telegram",
@@ -142,10 +185,14 @@ export function createGramJsUserClient(
     systemVersion: `${process.platform} ${process.arch}`,
     langCode: "en",
   });
+  const connectOnce = singleFlight(async () => {
+    await client.connect();
+  });
 
   const adapter: TelegramUserClient = {
     async connect() {
-      if (!client.connected) await client.connect();
+      if (client.connected) return;
+      await connectWithTimeout(connectOnce, CONNECT_TIMEOUT_MS);
     },
     async disconnect() {
       if (client.connected) await client.disconnect();

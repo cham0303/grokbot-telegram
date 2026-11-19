@@ -1,29 +1,40 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { pathToFileURL } from "node:url";
 import { createGramJsUserClient } from "./client.js";
 import { writeSessionString } from "./credentials.js";
+import { safeErrorMessage } from "./redact.js";
 import { isPasswordNeeded } from "./types.js";
+
+export function loginSavedLines(who: string, path: string): string[] {
+  return [
+    `Logged in as ${who}.`,
+    `Session written to ${path} (mode 0600). The session string was not printed.`,
+    "The file is full account access. Never commit it or paste it into chat.",
+  ];
+}
 
 async function main() {
   const rl = createInterface({ input, output });
   const ask = (prompt: string) => rl.question(prompt);
+  const secrets = { code: "", password: "", session: "" };
 
   try {
     const client = createGramJsUserClient();
     await client.connect();
     if (await client.isAuthorized()) {
       const me = await client.getMe();
-      const path = writeSessionString(client.exportSession());
-      console.log(
-        `Already authorized as ${me.username ? `@${me.username}` : me.firstName ?? me.id}.`,
-      );
-      console.log(`Session file: ${path}`);
+      secrets.session = client.exportSession();
+      const path = writeSessionString(secrets.session);
+      const who = me.username ? `@${me.username}` : me.firstName ?? me.id;
+      console.log(`Already authorized as ${who}.`);
+      for (const line of loginSavedLines(who, path).slice(1)) console.log(line);
       return;
     }
 
     const phone = (await ask("Phone number (+country code): ")).trim();
     const sent = await client.sendCode(phone);
-    const code = (
+    secrets.code = (
       await ask(
         sent.isCodeViaApp
           ? "Login code from the Telegram app: "
@@ -32,31 +43,43 @@ async function main() {
     ).trim();
 
     try {
-      await client.signIn(phone, sent.phoneCodeHash, code);
+      await client.signIn(phone, sent.phoneCodeHash, secrets.code);
     } catch (err) {
       if (!isPasswordNeeded(err)) throw err;
-      const password = await ask("Two-step verification password: ");
-      await client.signInWithPassword(password);
+      secrets.password = await ask("Two-step verification password: ");
+      await client.signInWithPassword(secrets.password);
     }
 
     const me = await client.getMe();
-    const session = client.exportSession();
-    const path = writeSessionString(session);
-    console.log(
-      `Logged in as ${me.username ? `@${me.username}` : me.firstName ?? me.id} (user id ${me.id}).`,
+    secrets.session = client.exportSession();
+    const path = writeSessionString(secrets.session);
+    const who = me.username ? `@${me.username}` : (me.firstName ?? me.id);
+    for (const line of loginSavedLines(`${who} (user id ${me.id})`, path)) {
+      console.log(line);
+    }
+  } catch (err) {
+    console.error(
+      safeErrorMessage(err, [secrets.code, secrets.password, secrets.session]),
     );
-    console.log(`Session written to ${path} (mode 0600).`);
-    console.log(
-      "This string is full account access. Paste it into Cursor Plugins → Configure → TELEGRAM_SESSION if you want it in plugin variables. Never commit it.",
-    );
-    console.log(session);
+    process.exitCode = 1;
   } finally {
     rl.close();
   }
 }
 
-main().catch((err) => {
-  const message = err instanceof Error ? err.message : String(err);
-  console.error(message);
-  process.exit(1);
-});
+function isDirectRun(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return import.meta.url === pathToFileURL(entry).href;
+}
+
+if (isDirectRun()) {
+  main()
+    .then(() => {
+      if (process.exitCode && process.exitCode !== 0) process.exit(process.exitCode);
+    })
+    .catch((err) => {
+      console.error(safeErrorMessage(err));
+      process.exit(1);
+    });
+}

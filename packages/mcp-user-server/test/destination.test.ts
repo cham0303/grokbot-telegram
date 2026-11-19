@@ -199,8 +199,10 @@ describe("send_message destination handling", () => {
     // A space rules out a username, so a miss here can only be a mistake.
     const { isError, text } = await send("Nowhere At All", seen);
     assert.equal(isError, true, text);
-    assert.match(text, /No chat named "Nowhere At All"/);
-    assert.match(text, /list_dialogs/);
+    const parsed = JSON.parse(text) as { code: string; message: string };
+    assert.equal(parsed.code, "error");
+    assert.match(parsed.message, /No chat named "Nowhere At All"/);
+    assert.match(parsed.message, /list_dialogs/);
     assert.equal(seen.targets.length, 0, "a message went somewhere unintended");
   });
 

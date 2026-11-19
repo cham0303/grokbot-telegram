@@ -1,6 +1,18 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { withSessionFileLockSync, type SessionLockOptions } from "./session-lock.js";
 
 export class UserAuthError extends Error {
   constructor(message: string) {
@@ -90,17 +102,74 @@ export function readStoredApiCredentials(
   }
 }
 
+export type AtomicWriteOptions = SessionLockOptions & {
+  // Test seam: throw after the temp file is durable and before rename.
+  // The destination is left unchanged.
+  beforeRename?: () => void;
+};
+
+// Temp file in the same directory, then rename. A crash or throw before
+// rename leaves the previous file in place and removes the temp file.
+export function atomicWriteFile(
+  path: string,
+  data: string,
+  mode: number,
+  options: AtomicWriteOptions = {},
+): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    // The directory already exists but cannot be chmod'd. The create mode
+    // above is still what a newly made directory asked for.
+  }
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const fd = openSync(tmp, "w", mode);
+  let opened = true;
+  let renamed = false;
+  try {
+    const buf = Buffer.from(data, "utf8");
+    let offset = 0;
+    while (offset < buf.length) {
+      const wrote = writeSync(fd, buf, offset);
+      if (wrote <= 0) throw new Error("session write made no progress");
+      offset += wrote;
+    }
+    fsyncSync(fd);
+    closeSync(fd);
+    opened = false;
+    options.beforeRename?.();
+    chmodSync(tmp, mode);
+    renameSync(tmp, path);
+    renamed = true;
+    chmodSync(path, mode);
+  } catch (err) {
+    if (opened) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed.
+      }
+    }
+    if (!renamed) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // Temp file was already removed.
+      }
+    }
+    throw err;
+  }
+}
+
 export function writeApiCredentials(
   credentials: StoredApiCredentials,
   env: NodeJS.ProcessEnv = process.env,
   home?: string,
 ): string {
   const path = apiCredentialsPath(env, home);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(credentials), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+  atomicWriteFile(path, JSON.stringify(credentials), 0o600);
   return path;
 }
 
@@ -144,10 +213,21 @@ export function readSessionString(): string {
   return readFileSync(path, "utf8").trim();
 }
 
-export function writeSessionString(session: string): string {
+export function writeSessionString(
+  session: string,
+  options: AtomicWriteOptions = {},
+): string {
+  if (session.trim() === "") {
+    throw new Error("Refusing to write an empty session over the session file.");
+  }
   const path = defaultSessionPath();
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, session, { encoding: "utf8", mode: 0o600 });
+  withSessionFileLockSync(
+    path,
+    () => {
+      atomicWriteFile(path, session, 0o600, options);
+    },
+    options,
+  );
   return path;
 }
 
